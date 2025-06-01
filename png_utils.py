@@ -27,4 +27,3 @@ def write_png_chunks(filename, signature, chunks):
 
             crc = zlib.crc32(chunk_type + data)
             f.write(crc.to_bytes(4, "big"))
-

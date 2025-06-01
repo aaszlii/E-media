@@ -1,77 +1,62 @@
-from block_cipher_modes import ecb_encrypt, cbc_encrypt
+import zlib
 import os
-from block_cipher_modes import ecb_decrypt
-from rsa_core import generate_keypair
+from RSA import RSA
 from png_utils import read_png_chunks, write_png_chunks
-from block_cipher_modes import cbc_decrypt
 
-def decrypt_cbc_png(input_filename, output_filename, privkey, iv):
-    sig, chunks = read_png_chunks(input_filename)
-    decrypted_chunks = []
+def extract_idat_data(chunks):
+    return b''.join(d for t, d in chunks if t == b'IDAT')
 
-    for t, d in chunks:
-        if t == b'IDAT':
-            print(f"Odszyfrowuję IDAT z pliku {input_filename} (CBC)")
-            decrypted = cbc_decrypt(d, privkey, iv)
-            decrypted_chunks.append((t, decrypted))
-        else:
-            decrypted_chunks.append((t, d))
+def replace_idat_data(chunks, new_data):
+    return [(t, d) if t != b'IDAT' else (b'IDAT', new_data) for t, d in chunks]
 
-    write_png_chunks(output_filename, sig, decrypted_chunks)
-    print(f"Odszyfrowany obraz zapisano jako {output_filename}")
+def compress(data: bytes) -> bytes:
+    return zlib.compress(data)
 
+def decompress(data: bytes) -> bytes:
+    return zlib.decompress(data)
 
-def decrypt_ecb_png(input_filename, output_filename, privkey):
-    sig, chunks = read_png_chunks(input_filename)
-    decrypted_chunks = []
+def run_encrypt_decrypt(mode: str, image_in: str):
+    print(f"\nTryb: {mode}")
 
-    for t, d in chunks:
-        if t == b'IDAT':
-            print(f"Odszyfrowuję IDAT z pliku {input_filename}")
-            decrypted = ecb_decrypt(d, privkey)
-            decrypted_chunks.append((t, decrypted))
-        else:
-            decrypted_chunks.append((t, d))
+    rsa = RSA(512)
+    public_key = rsa.public_key
+    private_key = rsa.private_key
 
-    write_png_chunks(output_filename, sig, decrypted_chunks)
-    print(f"Odszyfrowany obraz zapisano jako {output_filename}")
+    iv_bytes = os.urandom(64)
+    iv_int = int.from_bytes(iv_bytes, 'big')
+    print(f"[{mode}] Initialization Vector: {iv_int}")
+
+    # Wczytanie oryginalnych danych PNG
+    sig, chunks = read_png_chunks(image_in)
+    original_compressed = extract_idat_data(chunks)
+    original_data = decompress(original_compressed)
+
+    # Szyfrowanie
+    if mode == 'ECB':
+        encrypted_raw = rsa.encrypt_ecb(original_data, public_key)
+    elif mode == 'CBC':
+        encrypted_raw = rsa.encrypt_cbc(original_data, public_key, iv_int)
+    else:
+        raise ValueError("Nieznany tryb")
+
+    encrypted_compressed = compress(bytes(encrypted_raw))
+    enc_chunks = replace_idat_data(chunks, encrypted_compressed)
+    write_png_chunks(f'encrypted_{mode.lower()}.png', sig, enc_chunks)
+
+    # Deszyfrowanie
+    if mode == 'ECB':
+        decrypted_raw = rsa.decrypt_ecb(encrypted_raw, private_key)
+    elif mode == 'CBC':
+        decrypted_raw = rsa.decrypt_cbc(encrypted_raw, private_key, iv_int)
+    else:
+        raise ValueError("Nieznany tryb")
+
+    decrypted_raw = decrypted_raw[:len(original_data)]  # obetnij padding
+    decrypted_compressed = compress(bytes(decrypted_raw))
+    dec_chunks = replace_idat_data(chunks, decrypted_compressed)
+    write_png_chunks(f'decrypted_{mode.lower()}.png', sig, dec_chunks)
+
 
 if __name__ == "__main__":
-    pubkey, privkey = generate_keypair(512)
-    sig, chunks = read_png_chunks("test_image.png")
-
-    # --- ECB ---
-    ecb_chunks = []
-    for t, d in chunks:
-        if t == b'IDAT':
-            print(f"[ECB] Szyfruję IDAT")
-            encrypted = ecb_encrypt(d, pubkey)
-            ecb_chunks.append((t, encrypted))
-        else:
-            ecb_chunks.append((t, d))
-
-    write_png_chunks("encrypted_ecb.png", sig, ecb_chunks)
-    print("Zapisano: encrypted_ecb.png")
-
-    # --- CBC ---
-    iv = os.urandom(16)
-    saved_iv = iv
-    cbc_chunks = []
-    for t, d in chunks:
-        if t == b'IDAT':
-            print(f"[CBC] Szyfruję IDAT")
-            encrypted = cbc_encrypt(d, pubkey, iv)
-            cbc_chunks.append((t, encrypted))
-        else:
-            cbc_chunks.append((t, d))
-
-    write_png_chunks("encrypted_cbc.png", sig, cbc_chunks)
-    print("Zapisano: encrypted_cbc.png")
-
-    # Deszyfrowanie ECB
-    decrypt_ecb_png("encrypted_ecb.png", "decrypted_ecb.png", privkey)
-    decrypt_cbc_png("encrypted_cbc.png", "decrypted_cbc.png", privkey, saved_iv)
-
-
-
-
+    run_encrypt_decrypt('ECB', "test_image.png")
+    run_encrypt_decrypt('CBC', "test_image.png")
